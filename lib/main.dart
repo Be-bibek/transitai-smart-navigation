@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+
+import 'bloc/pixel_streaming_bloc.dart';
 import 'screens/main_ai_page.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // Immersive mode for spatial computing feel
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
@@ -12,7 +15,7 @@ void main() {
     systemNavigationBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
   ));
-  
+
   runApp(const MyApp());
 }
 
@@ -21,18 +24,20 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'AERO Sathi',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        primarySwatch: Colors.blue,
-        scaffoldBackgroundColor: Colors.black,
-        fontFamily: 'Roboto', // Modern, clean
-        useMaterial3: true,
+    return BlocProvider(
+      create: (_) => PixelStreamingBloc(),
+      child: MaterialApp(
+        title: 'AERO Sathi',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          brightness: Brightness.dark,
+          primarySwatch: Colors.blue,
+          scaffoldBackgroundColor: Colors.black,
+          fontFamily: 'Roboto',
+          useMaterial3: true,
+        ),
+        home: const MainAIPage(),
       ),
-      // Direct entry to the only screen in the app
-      home: const MainAIPage(),
     );
   }
 }

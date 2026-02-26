@@ -1,26 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// MainAIPage — AERO Sathi · "Always-On" Architecture
+// MainAIPage — AERO Sathi · BLoC-Service Architecture
 //
 // THE ONLY SCREEN IN THE APP.
 //
-// Everything auto-starts in initState:
-//   • Microphone initializes IMMEDIATELY and stays on FOREVER
-//   • Pixel Streaming WebRTC session connects automatically
-//   • Text sends are FIRE-AND-FORGET — no connection gate
-//   • LiquidGlassOrb tap = MUTE/UNMUTE (never kills mic)
-//   • Input bar is always visible at the bottom
-//
-// Stack layers (bottom → top):
-//   1  PixelStreamingLayer   — full-screen video / animated fallback bg
-//   2  Gradient vignettes    — top + bottom dark fade
-//   3  AssistantStatusHeader — top glassmorphic pill
-//   4  FloatingInfoBubble    — AI speech bubble (7-second auto-dismiss)
-//   5  QrScannerOverlay      — AnimatedOpacity, toggle-triggered
-//   6  Sent message echo     — shows last sent text
-//   7  Bottom glass controls — VoiceWaveform + LiquidGlassOrb + toggles
-//   8  InputBar              — always visible text input
-//   9  Connection status pill — shows connection state
-//   10 Loading glass scrim   — fades out the instant video arrives
+// Uses BlocBuilder for reactive UI and BlocListener for side effects.
+// All interaction goes through BLoC events:
+//   • ConnectStream        — boot pipeline
+//   • SendTextMessage      — fire-and-forget text
+//   • ToggleMic            — mute/unmute (never kills mic)
+//   • SendOrbitInput       — camera swipe
+//   • QrCodeScanned        — boarding pass
+//   • AppLifecyclePaused   — pause mic
+//   • AppLifecycleResumed  — resume mic
 // ─────────────────────────────────────────────────────────────────────────────
 
 import 'dart:async';
@@ -28,10 +19,13 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../bloc/pixel_streaming_bloc.dart';
+import '../bloc/pixel_streaming_event.dart';
+import '../bloc/pixel_streaming_state.dart';
 import '../core/assistant_state.dart';
-import '../services/pixel_streaming_controller.dart';
 import '../widgets/assistant_status_header.dart';
 import '../widgets/floating_info_bubble.dart';
 import '../widgets/input_bar.dart';
@@ -49,65 +43,60 @@ class MainAIPage extends StatefulWidget {
 
 class _MainAIPageState extends State<MainAIPage>
     with WidgetsBindingObserver {
-  late final PixelStreamingController _ctrl;
-
   final TextEditingController _textCtrl = TextEditingController();
   final FocusNode _textFocus = FocusNode();
   bool _showInputBar = false;
-
   bool _isScanning = false;
 
+  // Bubble state (managed locally for timer-based auto-dismiss)
   String? _bubbleText;
   bool _bubbleVisible = false;
   Timer? _bubbleTimer;
 
-  // Sent message echo
+  // Sent echo state
   String? _lastSentText;
   bool _sentEchoVisible = false;
   Timer? _sentEchoTimer;
 
+  // Volume level (animated locally from assistant state)
   double _volumeLevel = 0.0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _ctrl = PixelStreamingController();
     _bootApp();
   }
 
   Future<void> _bootApp() async {
-    // Request mic permission FIRST
     await Permission.microphone.request();
-    await _ctrl.initialize();
-    _ctrl.addListener(_onControllerUpdate);
-    // Connect — mic starts immediately via WebRTC getUserMedia
-    await _ctrl.connect();
-  }
-
-  void _onControllerUpdate() {
     if (!mounted) return;
-    if (_ctrl.assistantState == AssistantState.speaking &&
-        _ctrl.subtitleText.isNotEmpty) {
-      _showBubble(_ctrl.subtitleText);
-    }
-    _updateVolumeFromState();
-    setState(() {});
+    final bloc = context.read<PixelStreamingBloc>();
+    await bloc.initialize();
+    bloc.add(const ConnectStream());
   }
 
-  void _updateVolumeFromState() {
-    final flicker = (DateTime.now().millisecond / 1000.0);
-    switch (_ctrl.assistantState) {
-      case AssistantState.listening:
-        _volumeLevel = 0.50 + flicker * 0.35;
-      case AssistantState.speaking:
-        _volumeLevel = 0.65 + flicker * 0.30;
-      case AssistantState.processing:
-        _volumeLevel = 0.20 + flicker * 0.10;
-      case AssistantState.idle:
-        if (_volumeLevel > 0.02) _volumeLevel = _volumeLevel * 0.90;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final bloc = context.read<PixelStreamingBloc>();
+    if (state == AppLifecycleState.paused) {
+      bloc.add(const AppLifecyclePaused());
+    } else if (state == AppLifecycleState.resumed) {
+      bloc.add(const AppLifecycleResumed());
     }
   }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _textCtrl.dispose();
+    _textFocus.dispose();
+    _bubbleTimer?.cancel();
+    _sentEchoTimer?.cancel();
+    super.dispose();
+  }
+
+  // ── UI helpers ────────────────────────────────────────────────────────────
 
   void _showBubble(String text) {
     _bubbleTimer?.cancel();
@@ -133,84 +122,44 @@ class _MainAIPageState extends State<MainAIPage>
     });
   }
 
-  void _onQrDetected(String rawValue) {
-    setState(() => _isScanning = false);
-    HapticFeedback.heavyImpact();
-    // Fire-and-forget: no connection check
-    _ctrl.sendTextToConvai(
-      'User has scanned a boarding pass. '
-      'Gate: A12, Flight: EK202. '
-      'Please confirm these details with the user warmly.',
-    );
-    _showBubble('Boarding pass scanned ✈\nGate A12 · Flight EK202');
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Mic is PERSISTENT. On pause, mute the track. On resume, restore.
-    if (state == AppLifecycleState.paused) {
-      _ctrl.localMicStream?.getAudioTracks().forEach((t) => t.enabled = false);
-    } else if (state == AppLifecycleState.resumed) {
-      if (_ctrl.isMicEnabled) {
-        _ctrl.localMicStream?.getAudioTracks().forEach((t) => t.enabled = true);
-      }
+  void _updateVolume(AssistantState aiState) {
+    final flicker = (DateTime.now().millisecond / 1000.0);
+    switch (aiState) {
+      case AssistantState.listening:
+        _volumeLevel = 0.50 + flicker * 0.35;
+      case AssistantState.speaking:
+        _volumeLevel = 0.65 + flicker * 0.30;
+      case AssistantState.processing:
+        _volumeLevel = 0.20 + flicker * 0.10;
+      case AssistantState.idle:
+        if (_volumeLevel > 0.02) _volumeLevel = _volumeLevel * 0.90;
     }
   }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _ctrl.removeListener(_onControllerUpdate);
-    _ctrl.dispose();
-    _textCtrl.dispose();
-    _textFocus.dispose();
-    _bubbleTimer?.cancel();
-    _sentEchoTimer?.cancel();
-    super.dispose();
-  }
-
-  StreamingLayerState get _layerState {
-    switch (_ctrl.connectionState) {
-      case PsConnectionState.streaming:
-      case PsConnectionState.waitingForStream:
+  StreamingLayerState _toLayerState(StreamPhase phase) {
+    switch (phase) {
+      case StreamPhase.streaming:
+      case StreamPhase.waitingForStream:
         return StreamingLayerState.streaming;
-      case PsConnectionState.error:
+      case StreamPhase.error:
         return StreamingLayerState.error;
       default:
         return StreamingLayerState.connecting;
     }
   }
 
-  bool get _showLoading =>
-      _ctrl.connectionState == PsConnectionState.connecting ||
-      _ctrl.connectionState == PsConnectionState.disconnected;
+  // ── Text send handler ─────────────────────────────────────────────────────
 
-  bool get _showError => _ctrl.connectionState == PsConnectionState.error;
-
-  String get _statusLabel {
-    switch (_ctrl.connectionState) {
-      case PsConnectionState.disconnected:
-        return 'Initialising';
-      case PsConnectionState.connecting:
-        return 'Connecting';
-      case PsConnectionState.waitingForStream:
-        return 'Starting';
-      case PsConnectionState.streaming:
-        return 'Ready';
-      case PsConnectionState.error:
-        return 'Reconnecting';
-    }
-  }
-
-  // FIRE-AND-FORGET: no connection gate!
   void _onTextSend(String text) {
     if (text.trim().isEmpty) return;
-    _ctrl.sendTextToConvai(text);
+    context.read<PixelStreamingBloc>().add(SendTextMessage(text));
     _showSentEcho(text.trim());
     _textCtrl.clear();
     _textFocus.unfocus();
     HapticFeedback.selectionClick();
   }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -218,162 +167,200 @@ class _MainAIPageState extends State<MainAIPage>
     final size = MediaQuery.sizeOf(context);
     final bottomPadding = MediaQuery.of(context).viewInsets.bottom;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      resizeToAvoidBottomInset: false,
-      body: GestureDetector(
-        onTap: () => FocusScope.of(context).unfocus(),
-        behavior: HitTestBehavior.translucent,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // ── 1. Video / Fallback background ────────────────────────────
-            PixelStreamingLayer(
-              state: _layerState,
-              renderer: _ctrl.renderer,
-              onOrbitDelta: _ctrl.sendOrbitInput,
-            ),
+    return BlocListener<PixelStreamingBloc, PixelStreamingState>(
+      listenWhen: (prev, curr) =>
+          prev.subtitleText != curr.subtitleText ||
+          prev.assistantState != curr.assistantState,
+      listener: (context, state) {
+        // Show bubble when AI speaks
+        if (state.assistantState == AssistantState.speaking &&
+            state.subtitleText.isNotEmpty) {
+          _showBubble(state.subtitleText);
+        }
+        _updateVolume(state.assistantState);
+        setState(() {}); // Refresh volume animation
+      },
+      child: BlocBuilder<PixelStreamingBloc, PixelStreamingState>(
+        builder: (context, state) {
+          final bloc = context.read<PixelStreamingBloc>();
+          _updateVolume(state.assistantState);
 
-            // ── 2. Vignette gradients ─────────────────────────────────────
-            _buildVignettes(),
+          return Scaffold(
+            backgroundColor: Colors.black,
+            resizeToAvoidBottomInset: false,
+            body: GestureDetector(
+              onTap: () => FocusScope.of(context).unfocus(),
+              behavior: HitTestBehavior.translucent,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // ── 1. Video / Fallback background ────────────────────────
+                  PixelStreamingLayer(
+                    state: _toLayerState(state.phase),
+                    renderer: bloc.renderer,
+                    onOrbitDelta: (dx, dy) =>
+                        bloc.add(SendOrbitInput(dx, dy)),
+                  ),
 
-            // ── 3. Status header ──────────────────────────────────────────
-            Positioned(
-              top: 0, left: 0, right: 0,
-              child: SafeArea(
-                bottom: false,
-                child: AssistantStatusHeader(state: _ctrl.assistantState),
-              ),
-            ),
+                  // ── 2. Vignette gradients ─────────────────────────────────
+                  _buildVignettes(),
 
-            // ── 4. AI speech bubble ───────────────────────────────────────
-            Positioned(
-              left: 20, right: 20,
-              top: size.height * 0.22,
-              child: FloatingInfoBubble(
-                text: _bubbleText,
-                visible: _bubbleVisible,
-              ),
-            ),
+                  // ── 3. Status header ──────────────────────────────────────
+                  Positioned(
+                    top: 0, left: 0, right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: AssistantStatusHeader(state: state.assistantState),
+                    ),
+                  ),
 
-            // ── 5. QR scanner overlay ────────────────────────────────────
-            AnimatedOpacity(
-              opacity: _isScanning ? 1.0 : 0.0,
-              duration: const Duration(milliseconds: 350),
-              child: IgnorePointer(
-                ignoring: !_isScanning,
-                child: QrScannerOverlay(
-                  isVisible: _isScanning,
-                  onDetected: _onQrDetected,
-                  onClose: () => setState(() => _isScanning = false),
-                ),
-              ),
-            ),
+                  // ── 4. AI speech bubble ───────────────────────────────────
+                  Positioned(
+                    left: 20, right: 20,
+                    top: size.height * 0.22,
+                    child: FloatingInfoBubble(
+                      text: _bubbleText,
+                      visible: _bubbleVisible,
+                    ),
+                  ),
 
-            // ── 6. Sent message echo ─────────────────────────────────────
-            if (_lastSentText != null)
-              Positioned(
-                left: 40, right: 40,
-                bottom: _showInputBar ? 310 + bottomPadding : 250,
-                child: AnimatedOpacity(
-                  opacity: _sentEchoVisible ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 300),
-                  child: _SentMessageEcho(text: _lastSentText!),
-                ),
-              ),
-
-            // ── 7. Bottom controls ────────────────────────────────────────
-            SafeArea(
-              top: false,
-              child: Padding(
-                padding: EdgeInsets.only(bottom: bottomPadding),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    // Connection status pill (when not streaming)
-                    if (_ctrl.connectionState != PsConnectionState.streaming)
-                      _ConnectionStatusPill(
-                        label: _statusLabel,
-                        isError: _showError,
+                  // ── 5. QR scanner overlay ─────────────────────────────────
+                  AnimatedOpacity(
+                    opacity: _isScanning ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 350),
+                    child: IgnorePointer(
+                      ignoring: !_isScanning,
+                      child: QrScannerOverlay(
+                        isVisible: _isScanning,
+                        onDetected: (rawValue) {
+                          setState(() => _isScanning = false);
+                          HapticFeedback.heavyImpact();
+                          bloc.add(QrCodeScanned(rawValue));
+                          _showBubble(
+                              'Boarding pass scanned ✈\nGate A12 · Flight EK202');
+                        },
+                        onClose: () => setState(() => _isScanning = false),
                       ),
-                    const SizedBox(height: 8),
-
-                    // Voice waveform
-                    VoiceWaveform(
-                      aiState: _ctrl.assistantState,
-                      volumeLevel: _volumeLevel.clamp(0.0, 1.0),
                     ),
-                    const SizedBox(height: 12),
+                  ),
 
-                    // Input bar (animated show/hide)
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 300),
-                      child: _showInputBar
-                          ? Padding(
-                              key: const ValueKey('input-bar'),
-                              padding: const EdgeInsets.symmetric(horizontal: 18),
-                              child: InputBar(
-                                controller: _textCtrl,
-                                focusNode: _textFocus,
-                                onSend: _onTextSend,
+                  // ── 6. Sent message echo ──────────────────────────────────
+                  if (_lastSentText != null)
+                    Positioned(
+                      left: 40, right: 40,
+                      bottom: _showInputBar ? 310 + bottomPadding : 250,
+                      child: AnimatedOpacity(
+                        opacity: _sentEchoVisible ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 300),
+                        child: _SentMessageEcho(text: _lastSentText!),
+                      ),
+                    ),
+
+                  // ── 7. Bottom controls ────────────────────────────────────
+                  SafeArea(
+                    top: false,
+                    child: Padding(
+                      padding: EdgeInsets.only(bottom: bottomPadding),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          // Connection status pill
+                          if (!state.isStreaming)
+                            _ConnectionStatusPill(
+                              label: state.statusLabel,
+                              isError: state.hasError,
+                            ),
+                          const SizedBox(height: 8),
+
+                          // Voice waveform
+                          VoiceWaveform(
+                            aiState: state.assistantState,
+                            volumeLevel: _volumeLevel.clamp(0.0, 1.0),
+                          ),
+                          const SizedBox(height: 12),
+
+                          // Input bar
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 300),
+                            child: _showInputBar
+                                ? Padding(
+                                    key: const ValueKey('input-bar'),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 18),
+                                    child: InputBar(
+                                      controller: _textCtrl,
+                                      focusNode: _textFocus,
+                                      onSend: _onTextSend,
+                                    ),
+                                  )
+                                : const SizedBox(
+                                    key: ValueKey('input-bar-hidden')),
+                          ),
+                          const SizedBox(height: 14),
+
+                          // Control row
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              _KeyboardToggle(
+                                active: _showInputBar,
+                                onTap: () {
+                                  setState(
+                                      () => _showInputBar = !_showInputBar);
+                                  if (!_showInputBar) _textFocus.unfocus();
+                                },
                               ),
-                            )
-                          : const SizedBox(key: ValueKey('input-bar-hidden')),
+                              const SizedBox(width: 24),
+                              LiquidGlassOrb(
+                                aiState: state.assistantState,
+                                isMicActive: state.isMicEnabled,
+                                volumeLevel: _volumeLevel.clamp(0.0, 1.0),
+                                onTap: () {
+                                  // BLoC event — always works, no gates
+                                  bloc.add(const ToggleMic());
+                                  HapticFeedback.mediumImpact();
+                                },
+                              ),
+                              const SizedBox(width: 24),
+                              _ScannerToggle(
+                                active: _isScanning,
+                                onTap: () {
+                                  setState(
+                                      () => _isScanning = !_isScanning);
+                                  if (_isScanning) {
+                                    HapticFeedback.mediumImpact();
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 40),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 14),
+                  ),
 
-                    // Control row: keyboard toggle, orb, scanner toggle
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        _KeyboardToggle(
-                          active: _showInputBar,
-                          onTap: () {
-                            setState(() => _showInputBar = !_showInputBar);
-                            if (!_showInputBar) _textFocus.unfocus();
-                          },
-                        ),
-                        const SizedBox(width: 24),
-                        LiquidGlassOrb(
-                          aiState: _ctrl.assistantState,
-                          isMicActive: _ctrl.isMicEnabled,
-                          volumeLevel: _volumeLevel.clamp(0.0, 1.0),
-                          onTap: () {
-                            // ALWAYS works — mute/unmute, no connection gate
-                            _ctrl.toggleMic();
-                            HapticFeedback.mediumImpact();
-                          },
-                        ),
-                        const SizedBox(width: 24),
-                        _ScannerToggle(
-                          active: _isScanning,
-                          onTap: () {
-                            setState(() => _isScanning = !_isScanning);
-                            if (_isScanning) HapticFeedback.mediumImpact();
-                          },
-                        ),
-                      ],
+                  // ── 8. Error toast ────────────────────────────────────────
+                  if (state.hasError)
+                    _ErrorToast(
+                      onReconnect: () =>
+                          bloc.add(const ReconnectStream()),
                     ),
-                    const SizedBox(height: 40),
-                  ],
-                ),
+
+                  // ── 9. Loading scrim ──────────────────────────────────────
+                  AnimatedOpacity(
+                    opacity: state.isLoading ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 700),
+                    child: IgnorePointer(
+                      ignoring: !state.isLoading,
+                      child: _GlassLoadingScrim(label: state.statusLabel),
+                    ),
+                  ),
+                ],
               ),
             ),
-
-            // ── 9. Error toast ────────────────────────────────────────────
-            if (_showError) _ErrorToast(onReconnect: _ctrl.connect),
-
-            // ── 10. Loading scrim ─────────────────────────────────────────
-            AnimatedOpacity(
-              opacity: _showLoading ? 1.0 : 0.0,
-              duration: const Duration(milliseconds: 700),
-              child: IgnorePointer(
-                ignoring: !_showLoading,
-                child: _GlassLoadingScrim(label: _statusLabel),
-              ),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -388,7 +375,10 @@ class _MainAIPageState extends State<MainAIPage>
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [Colors.black.withValues(alpha: 0.7), Colors.transparent],
+                colors: [
+                  Colors.black.withValues(alpha: 0.7),
+                  Colors.transparent,
+                ],
               ),
             ),
           ),
@@ -400,7 +390,10 @@ class _MainAIPageState extends State<MainAIPage>
               gradient: LinearGradient(
                 begin: Alignment.bottomCenter,
                 end: Alignment.topCenter,
-                colors: [Colors.black.withValues(alpha: 0.85), Colors.transparent],
+                colors: [
+                  Colors.black.withValues(alpha: 0.85),
+                  Colors.transparent,
+                ],
               ),
             ),
           ),
@@ -411,8 +404,9 @@ class _MainAIPageState extends State<MainAIPage>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sent Message Echo — shows what the user typed
+// Helper Widgets (unchanged visuals, same premium look)
 // ─────────────────────────────────────────────────────────────────────────────
+
 class _SentMessageEcho extends StatelessWidget {
   final String text;
   const _SentMessageEcho({required this.text});
@@ -439,23 +433,18 @@ class _SentMessageEcho extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.send_rounded,
-                  color: const Color(0xFF4FC3F7).withValues(alpha: 0.7),
-                  size: 14,
-                ),
+                Icon(Icons.send_rounded,
+                    color: const Color(0xFF4FC3F7).withValues(alpha: 0.7),
+                    size: 14),
                 const SizedBox(width: 8),
                 Flexible(
-                  child: Text(
-                    text,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w400,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  child: Text(text,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w400),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis),
                 ),
               ],
             ),
@@ -466,9 +455,6 @@ class _SentMessageEcho extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Connection Status Pill
-// ─────────────────────────────────────────────────────────────────────────────
 class _ConnectionStatusPill extends StatelessWidget {
   final String label;
   final bool isError;
@@ -486,7 +472,8 @@ class _ConnectionStatusPill extends StatelessWidget {
             color: (isError ? Colors.red : Colors.white).withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(
-              color: (isError ? Colors.red : Colors.white).withValues(alpha: 0.15),
+              color: (isError ? Colors.red : Colors.white)
+                  .withValues(alpha: 0.15),
               width: 1,
             ),
           ),
@@ -497,19 +484,18 @@ class _ConnectionStatusPill extends StatelessWidget {
                 width: 12, height: 12,
                 child: CircularProgressIndicator(
                   strokeWidth: 1.5,
-                  color: isError ? Colors.redAccent : const Color(0xFF4FC3F7),
+                  color:
+                      isError ? Colors.redAccent : const Color(0xFF4FC3F7),
                 ),
               ),
               const SizedBox(width: 10),
-              Text(
-                label,
-                style: TextStyle(
-                  color: isError ? Colors.redAccent : Colors.white60,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 0.5,
-                ),
-              ),
+              Text(label,
+                  style: TextStyle(
+                      color:
+                          isError ? Colors.redAccent : Colors.white60,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.5)),
             ],
           ),
         ),
@@ -518,9 +504,6 @@ class _ConnectionStatusPill extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Keyboard Toggle
-// ─────────────────────────────────────────────────────────────────────────────
 class _KeyboardToggle extends StatelessWidget {
   final bool active;
   final VoidCallback onTap;
@@ -535,9 +518,13 @@ class _KeyboardToggle extends StatelessWidget {
         width: 50, height: 50,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: active ? const Color(0xFF4FC3F7).withValues(alpha: 0.2) : Colors.white.withValues(alpha: 0.1),
+          color: active
+              ? const Color(0xFF4FC3F7).withValues(alpha: 0.2)
+              : Colors.white.withValues(alpha: 0.1),
           border: Border.all(
-            color: active ? const Color(0xFF4FC3F7).withValues(alpha: 0.5) : Colors.white.withValues(alpha: 0.15),
+            color: active
+                ? const Color(0xFF4FC3F7).withValues(alpha: 0.5)
+                : Colors.white.withValues(alpha: 0.15),
             width: 1.5,
           ),
         ),
@@ -551,9 +538,6 @@ class _KeyboardToggle extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Scanner Toggle
-// ─────────────────────────────────────────────────────────────────────────────
 class _ScannerToggle extends StatelessWidget {
   final bool active;
   final VoidCallback onTap;
@@ -568,9 +552,13 @@ class _ScannerToggle extends StatelessWidget {
         width: 50, height: 50,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: active ? const Color(0xFF4FC3F7).withValues(alpha: 0.2) : Colors.white.withValues(alpha: 0.1),
+          color: active
+              ? const Color(0xFF4FC3F7).withValues(alpha: 0.2)
+              : Colors.white.withValues(alpha: 0.1),
           border: Border.all(
-            color: active ? const Color(0xFF4FC3F7).withValues(alpha: 0.5) : Colors.white.withValues(alpha: 0.15),
+            color: active
+                ? const Color(0xFF4FC3F7).withValues(alpha: 0.5)
+                : Colors.white.withValues(alpha: 0.15),
             width: 1.5,
           ),
         ),
@@ -584,11 +572,8 @@ class _ScannerToggle extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Error Toast
-// ─────────────────────────────────────────────────────────────────────────────
 class _ErrorToast extends StatelessWidget {
-  final Future<void> Function() onReconnect;
+  final VoidCallback onReconnect;
   const _ErrorToast({required this.onReconnect});
 
   @override
@@ -600,7 +585,8 @@ class _ErrorToast extends StatelessWidget {
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
               color: Colors.red.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(16),
@@ -608,17 +594,18 @@ class _ErrorToast extends StatelessWidget {
             ),
             child: Row(
               children: [
-                const Icon(Icons.error_outline, color: Colors.redAccent, size: 20),
+                const Icon(Icons.error_outline,
+                    color: Colors.redAccent, size: 20),
                 const SizedBox(width: 12),
                 const Expanded(
-                  child: Text(
-                    'Connection lost. Auto-retrying…',
-                    style: TextStyle(color: Colors.white, fontSize: 13),
-                  ),
+                  child: Text('Connection lost. Auto-retrying…',
+                      style:
+                          TextStyle(color: Colors.white, fontSize: 13)),
                 ),
                 TextButton(
                   onPressed: onReconnect,
-                  child: const Text('Retry', style: TextStyle(color: Color(0xFF4FC3F7))),
+                  child: const Text('Retry',
+                      style: TextStyle(color: Color(0xFF4FC3F7))),
                 ),
               ],
             ),
@@ -629,9 +616,6 @@ class _ErrorToast extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Glass Loading Scrim
-// ─────────────────────────────────────────────────────────────────────────────
 class _GlassLoadingScrim extends StatefulWidget {
   final String label;
   const _GlassLoadingScrim({required this.label});
@@ -675,36 +659,31 @@ class _GlassLoadingScrimState extends State<_GlassLoadingScrim>
                     ),
                     boxShadow: [
                       BoxShadow(
-                        color: const Color(0xFF4FC3F7).withValues(alpha: 0.3 + breath * 0.2),
+                        color: const Color(0xFF4FC3F7)
+                            .withValues(alpha: 0.3 + breath * 0.2),
                         blurRadius: 40,
                         spreadRadius: 5,
                       ),
                     ],
                   ),
-                  child: const Icon(Icons.mic, color: Colors.white, size: 40),
+                  child:
+                      const Icon(Icons.mic, color: Colors.white, size: 40),
                 );
               },
             ),
             const SizedBox(height: 40),
-            Text(
-              widget.label,
-              style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 16,
-                letterSpacing: 2,
-                fontWeight: FontWeight.w300,
-              ),
-            ),
+            Text(widget.label,
+                style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 16,
+                    letterSpacing: 2,
+                    fontWeight: FontWeight.w300)),
             const SizedBox(height: 16),
-            // Mic status hint
-            Text(
-              '🎙 Microphone will activate on connect',
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.4),
-                fontSize: 12,
-                fontWeight: FontWeight.w300,
-              ),
-            ),
+            Text('🎙 Microphone will activate on connect',
+                style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.4),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w300)),
           ],
         ),
       ),

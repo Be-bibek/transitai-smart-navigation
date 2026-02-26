@@ -1,6 +1,7 @@
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:collection';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 /// Handles bidirectional communication with Unreal Engine over the Pixel
@@ -18,8 +19,10 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 ///   { "type": "ai_response", "text": "..spoken sentence.." }
 ///   { "type": "state",       "value": "idle | listening | processing | speaking" }
 ///
-/// Register [onAiResponse] and [onStateChange] callbacks before attaching the
-/// channel so that no messages are missed.
+/// FIRE-AND-FORGET ARCHITECTURE:
+///   Messages are queued when the DataChannel is not yet open.
+///   Once attached and open, the queue flushes automatically.
+///   This removes the "logic block" that prevented sending before streaming.
 class PixelStreamingService {
   // ── Message type constants ────────────────────────────────────────────────
 
@@ -29,6 +32,9 @@ class PixelStreamingService {
   // ── Internal state ────────────────────────────────────────────────────────
 
   RTCDataChannel? _dataChannel;
+
+  /// Messages queued before the DataChannel opened.
+  final Queue<String> _pendingMessages = Queue<String>();
 
   // ── Public callbacks ──────────────────────────────────────────────────────
 
@@ -40,6 +46,9 @@ class PixelStreamingService {
   /// `{ "type": "state", "value": "idle | listening | processing | speaking" }`
   void Function(String value)? onStateChange;
 
+  /// Called when the DataChannel opens (so the controller can react).
+  VoidCallback? onChannelOpen;
+
   // ── Channel management ────────────────────────────────────────────────────
 
   /// Attach an open [RTCDataChannel] so messages can be sent and received.
@@ -50,6 +59,11 @@ class PixelStreamingService {
     _dataChannel!.onMessage = (RTCDataChannelMessage message) {
       _handleIncomingMessage(message);
     };
+
+    // Flush any queued messages now that the channel is open.
+    _flushPending();
+
+    onChannelOpen?.call();
   }
 
   /// Returns `true` when a channel is attached and open.
@@ -61,14 +75,36 @@ class PixelStreamingService {
 
   /// Sends [jsonString] to Unreal Engine as a UI-interaction event.
   ///
-  /// Equivalent to calling `emitUIInteraction(jsonString)` in player.html.
-  /// Returns `true` on success, `false` if the channel is not ready.
+  /// FIRE-AND-FORGET: if the channel is not ready, the message is queued
+  /// and will be sent automatically once the channel opens.
+  /// Always returns `true` (message accepted).
   bool emitUIInteraction(String jsonString) {
-    if (!isConnected) return false;
-
-    final bytes = _encodeUIInteraction(jsonString);
-    _dataChannel!.send(RTCDataChannelMessage.fromBinary(bytes));
+    if (isConnected) {
+      _sendRaw(jsonString);
+    } else {
+      // Queue the message — it will be sent when the channel opens.
+      _pendingMessages.add(jsonString);
+      debugPrint('PixelStreamingService: queued message (channel not ready)');
+    }
     return true;
+  }
+
+  void _sendRaw(String jsonString) {
+    try {
+      final bytes = _encodeUIInteraction(jsonString);
+      _dataChannel!.send(RTCDataChannelMessage.fromBinary(bytes));
+    } catch (e) {
+      debugPrint('PixelStreamingService: send failed — $e');
+    }
+  }
+
+  void _flushPending() {
+    if (!isConnected) return;
+    while (_pendingMessages.isNotEmpty) {
+      final msg = _pendingMessages.removeFirst();
+      debugPrint('PixelStreamingService: flushing queued message');
+      _sendRaw(msg);
+    }
   }
 
   // ── Inbound handling ──────────────────────────────────────────────────────
@@ -124,7 +160,9 @@ class PixelStreamingService {
 
   void dispose() {
     _dataChannel = null;
+    _pendingMessages.clear();
     onAiResponse = null;
     onStateChange = null;
+    onChannelOpen = null;
   }
 }

@@ -1,16 +1,16 @@
 ﻿// ─────────────────────────────────────────────────────────────────────────────
-// PixelStreamingController
+// PixelStreamingController — "Always-On" Architecture
+//
+// DESIGN PHILOSOPHY:
+//   • Microphone initializes IMMEDIATELY on app launch and stays on forever.
+//   • Toggle = mute/unmute (audio track enabled/disabled), NOT kill mic.
+//   • Text and voice are sent via "fire-and-forget" — no connection gate.
+//   • DataChannel messages are queued if not yet open (PixelStreamingService).
+//   • Reconnection is infinite — no max attempts, always tries to recover.
 //
 // Supports BOTH Unreal Engine Pixel Streaming protocols:
-//   • Original PS  (UE5 embedded server, port 80):
-//     Server drives: config → offer → client answers → ICE
-//   • Pixel Streaming 2 (separate Cirrus/SFU, port 8888):
-//     Client: listStreamers → subscribe → server: config → offer → ...
-//
-// The controller auto-detects which protocol the server uses based on
-// the first message it receives, so the same code works for both.
-//
-// Architecture: ChangeNotifier — no extra state package required.
+//   • Original PS  (UE5 embedded server, port 80)
+//   • Pixel Streaming 2 (separate Cirrus/SFU, port 8888)
 // ─────────────────────────────────────────────────────────────────────────────
 
 import 'dart:async';
@@ -41,6 +41,9 @@ class PixelStreamingController extends ChangeNotifier {
   bool subtitleVisible = false;
   String errorMessage = '';
 
+  /// Messages sent by the user (for local echo in UI).
+  final List<String> sentMessages = [];
+
   // ── RTCVideoRenderer — give to RTCVideoView in the UI ──────────────────────
   final RTCVideoRenderer renderer = RTCVideoRenderer();
 
@@ -52,15 +55,14 @@ class PixelStreamingController extends ChangeNotifier {
   RTCPeerConnection? _pc;
   RTCDataChannel? _dataChannel;
   MediaStream? _localMicStream;
-  bool _micEnabled = true;
+  bool _micMuted = false; // false = unmuted (mic ON by default)
   bool _disposed = false;
 
-  /// Exposed so AiStreamScreen can pause/resume during app lifecycle changes.
+  /// Exposed so MainAIPage can pause/resume during app lifecycle changes.
   MediaStream? get localMicStream => _localMicStream;
 
-  // Reconnect bookkeeping
+  // Reconnect bookkeeping — infinite retries
   int _reconnectAttempts = 0;
-  static const int _maxReconnectAttempts = 5;
   Timer? _reconnectTimer;
   Timer? _connectTimeoutTimer;
 
@@ -70,6 +72,7 @@ class PixelStreamingController extends ChangeNotifier {
     await renderer.initialize();
     _psService.onAiResponse = _onAiResponse;
     _psService.onStateChange = _onAssistantStateChange;
+    _psService.onChannelOpen = _onChannelOpen;
   }
 
   Future<void> connect() async {
@@ -108,23 +111,21 @@ class PixelStreamingController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Toggle device microphone mute; notifies Unreal via DataChannel.
-  /// Default state is UNMUTED (voice-first) — the user opts OUT by tapping.
+  /// Toggle microphone MUTE/UNMUTE.
+  /// The mic process stays alive — only the audio track is enabled/disabled.
   void toggleMic() {
-    _micEnabled = !_micEnabled;
+    _micMuted = !_micMuted;
     _localMicStream?.getAudioTracks().forEach((t) {
-      t.enabled = _micEnabled;
+      t.enabled = !_micMuted;
     });
+    // Fire-and-forget: tell Unreal about mic state regardless of connection
     _psService.emitUIInteraction(jsonEncode({
-      'type': _micEnabled ? 'start_listening' : 'stop_listening',
+      'type': _micMuted ? 'stop_listening' : 'start_listening',
     }));
     notifyListeners();
   }
 
-  /// Sends swipe-delta to Unreal as a remote_input event so the Spring Arm
-  /// rotates the Cine Camera around Vivian.
-  ///
-  /// Call this from the GestureDetector onPanUpdate in PixelStreamingLayer.
+  /// Sends swipe-delta to Unreal as a remote_input event.
   void sendOrbitInput(double deltaX, double deltaY) {
     _psService.emitUIInteraction(jsonEncode({
       'type': 'remote_input',
@@ -133,20 +134,30 @@ class PixelStreamingController extends ChangeNotifier {
     }));
   }
 
-  /// Sends a plain-text string to Unreal's Convai component via the
-  /// DataChannel.  Use this from the InputBar text field.
+  /// Sends a plain-text string to Unreal's Convai component.
+  /// FIRE-AND-FORGET: always accepts the message, queues if channel not ready.
+  /// Returns true always.
   bool sendTextToConvai(String text) {
     if (text.trim().isEmpty) return false;
-    return _psService.emitUIInteraction(jsonEncode({
+    final trimmed = text.trim();
+
+    // Local echo — show immediately in UI
+    sentMessages.add(trimmed);
+    if (sentMessages.length > 20) sentMessages.removeAt(0); // Keep last 20
+
+    // Fire-and-forget to Unreal
+    _psService.emitUIInteraction(jsonEncode({
       'type': 'text_input',
-      'text': text.trim(),
+      'text': trimmed,
     }));
+    notifyListeners();
+    return true;
   }
 
-  bool get isMicEnabled => _micEnabled;
+  /// true = mic is ON (unmuted), false = mic is muted
+  bool get isMicEnabled => !_micMuted;
 
-  /// Send boarding-pass data (passenger_name, gate_number, flight_time) to UE.
-  /// Maps to Unreal's OnPixelStreamingInputEvent Blueprint event.
+  /// Send boarding-pass data to UE.
   bool sendBoardingData(Map<String, dynamic> data) {
     return _psService.emitUIInteraction(jsonEncode(data));
   }
@@ -166,15 +177,12 @@ class PixelStreamingController extends ChangeNotifier {
 
   // ── WebSocket connection ───────────────────────────────────────────────────
 
-  /// Tries to connect to [url]. Returns true if the WebSocket opened
-  /// successfully (does NOT wait for signaling to complete).
   Future<bool> _tryConnect(String url) async {
     try {
       debugPrint('PixelStreamingController: trying WebSocket → $url');
       final uri = Uri.parse(url);
       final ws = WebSocketChannel.connect(uri);
 
-      // Wait for the channel to be ready (throws if refused).
       await ws.ready.timeout(
         const Duration(seconds: 6),
         onTimeout: () => throw TimeoutException('Connection timed out'),
@@ -182,23 +190,9 @@ class PixelStreamingController extends ChangeNotifier {
 
       _ws = ws;
 
-      // -- PASSIVE LISTEN: UE5 sends config -> offer automatically ──────────
-      // The UE5 embedded Pixel Streaming server (port 80) initiates the
-      // handshake: it sends {"type":"config",...} immediately after the
-      // WebSocket connects, then {"type":"offer",...} right after.
-      //
-      // We must NOT send any messages first (listStreamers / subscribe).
-      // Sending unsolicited messages caused UE5 to drop/reset the session.
-      //
-      // Protocol flow (UE5 PS embedded, port 80):
-      //   UE5 -> config   (ICE server settings)
-      //   UE5 -> offer    (SDP offer)
-      //   Flutter -> answer (SDP answer)    <- we send this in _handleOffer
-      //   ICE candidates exchanged -> video stream begins
       debugPrint('PixelStreamingController: passive mode — waiting for UE5 config+offer');
 
-      // ── Start a 20-second overall connection timeout ────────────────────────
-      // If we never receive a valid offer+answer, declare error.
+      // 20-second handshake timeout
       _connectTimeoutTimer = Timer(const Duration(seconds: 20), () {
         if (!_disposed && connectionState != PsConnectionState.streaming) {
           _handleError(
@@ -212,13 +206,11 @@ class PixelStreamingController extends ChangeNotifier {
         _onWsMessage,
         onError: (e) => _handleError('WebSocket error: $e'),
         onDone: () {
-          // ── FIX: handle close in ANY state, not just streaming ───────────────
           if (_disposed) return;
           if (connectionState == PsConnectionState.streaming) {
             debugPrint('PixelStreamingController: stream closed — scheduling reconnect');
             _scheduleReconnect();
           } else if (connectionState != PsConnectionState.disconnected) {
-            // Closed before we got a stream — treat as error
             _handleError('Signaling server closed the connection ($url).');
           }
         },
@@ -243,16 +235,10 @@ class PixelStreamingController extends ChangeNotifier {
   }
 
   // ── Signaling message handler ─────────────────────────────────────────────
-  //
-  // Protocol auto-detection:
-  //   • If first message is 'config'  → Original Pixel Streaming (server-initiated offer)
-  //   • If first message is 'streamerList' → Pixel Streaming 2 (subscribe required)
 
   Future<void> _onWsMessage(dynamic raw) async {
     if (_disposed) return;
-    // ── Decode frame: UE5 PS sends binary WebSocket frames (Uint8List) not text.
-    // raw as String throws when the frame is binary, silently dropping every
-    // message. We must convert List<int> → String via utf8.decode first.
+
     String rawStr;
     if (raw is String) {
       rawStr = raw;
@@ -262,7 +248,6 @@ class PixelStreamingController extends ChangeNotifier {
       rawStr = raw.toString();
     }
 
-    // RAW WIRE LOG — shows the decoded text so we can trace the protocol
     debugPrint('PixelStreamingController [RAW RECV] '
         '${rawStr.length > 300 ? rawStr.substring(0, 300) : rawStr}');
 
@@ -270,66 +255,43 @@ class PixelStreamingController extends ChangeNotifier {
     try {
       msg = jsonDecode(rawStr) as Map<String, dynamic>;
     } catch (_) {
-      return; // Ignore non-JSON frames (e.g. ping)
+      return;
     }
 
     final type = msg['type'] as String? ?? '';
     debugPrint('PixelStreamingController: ← $type');
 
     switch (type) {
-      // ── PS2: streamer list received → subscribe ────────────────────────────
       case 'streamerList':
         final streamers = (msg['ids'] as List?) ?? [];
         final id = streamers.isNotEmpty ? streamers.first.toString() : 'DefaultStreamer';
-        debugPrint('PixelStreamingController: streamerList received -> re-subscribing to "$id"');
+        debugPrint('PixelStreamingController: streamerList → subscribing to "$id"');
         _wsSend({'type': 'subscribe', 'streamerId': id});
         break;
 
-      // ── Both protocols: ICE server config received ────────────────────────
-      // ── config: create PeerConnection then send subscribe to wake UE5 ───────
-      // Flow (Cirrus/UE5 embedded):
-      //   server -> config   (ICE settings)
-      //   client -> subscribe (tells server a player is ready)
-      //   server -> playerConnected to UE5
-      //   UE5    -> offer    (SDP offer forwarded via server)
-      // ── config: subscribe IMMEDIATELY, then set up the PeerConnection ───────
-      // CRITICAL timing: UE5's signaling server drops the connection if the
-      // client doesn't respond (subscribe) within ~1-2 seconds of config.
-      // _createPeerConnection() acquires the mic which can take >1s on web.
-      // Solution: send subscribe FIRST so UE5 triggers the offer, THEN build
-      // the PeerConnection in parallel — the offer will be processed once PC
-      // is ready because it arrives as a subsequent WebSocket message.
       case 'config':
         debugPrint('PixelStreamingController: config received — subscribing immediately');
-        // Step 1: Subscribe RIGHT NOW before anything async (keeps UE5 alive)
         _wsSend({'type': 'subscribe', 'streamerId': 'DefaultStreamer'});
-        debugPrint('PixelStreamingController: -> subscribe sent (before PC setup)');
-        // Step 2: Now build the PeerConnection — offer will arrive while we do this
+        debugPrint('PixelStreamingController: → subscribe sent (before PC setup)');
         await _createPeerConnection(msg);
         debugPrint('PixelStreamingController: PC ready — waiting for offer');
         break;
 
-      // ── Both protocols: SDP offer from Unreal ────────────────────────────
       case 'offer':
         debugPrint('PixelStreamingController: received offer, generating answer');
         await _handleOffer(msg);
         break;
 
-      // ── ICE candidate from Unreal ─────────────────────────────────────────
       case 'iceCandidate':
         await _handleRemoteIce(msg);
         break;
 
-      // ── Ping / pong ───────────────────────────────────────────────────────
       case 'ping':
         _wsSend({'type': 'pong'});
         break;
 
-      // ── playerConnected / playerCount — informational, ignore ─────────────
-      // ── identify: PS2 server (port 8888) asks for our endpoint ID ───────────
-      // Respond with endpointIdConfirm so the server knows we are a player.
       case 'identify':
-        debugPrint('PixelStreamingController: identify received -> sending endpointIdConfirm');
+        debugPrint('PixelStreamingController: identify → endpointIdConfirm');
         _wsSend({'type': 'endpointIdConfirm', 'id': 'player'});
         break;
 
@@ -346,10 +308,7 @@ class PixelStreamingController extends ChangeNotifier {
   // ── RTCPeerConnection setup ───────────────────────────────────────────────
 
   Future<void> _createPeerConnection(Map<String, dynamic> configMsg) async {
-    // Support both flat and nested ICE server config formats
-    final pco =
-        configMsg['peerConnectionOptions'] as Map<String, dynamic>? ??
-        configMsg;
+    final pco = configMsg['peerConnectionOptions'] as Map<String, dynamic>? ?? configMsg;
     final rawServers = pco['iceServers'] as List? ?? [];
 
     final iceServers = rawServers.map((s) {
@@ -361,7 +320,6 @@ class PixelStreamingController extends ChangeNotifier {
       };
     }).toList();
 
-    // Always ensure at least one STUN server for LAN ICE gathering
     if (iceServers.isEmpty) {
       iceServers.add({'urls': 'stun:stun.l.google.com:19302'});
     }
@@ -375,7 +333,6 @@ class PixelStreamingController extends ChangeNotifier {
     _pc = await createPeerConnection(configuration);
 
     // ── DataChannel — MUST be created BEFORE generating the answer ────────────
-    // Label "datachannel" is required by UE5 Pixel Streaming Input Component.
     final dcInit = RTCDataChannelInit()
       ..ordered = true
       ..id = 1;
@@ -388,19 +345,19 @@ class PixelStreamingController extends ChangeNotifier {
       }
     };
 
-    // Also handle messages directly in case onDataChannelState fires late
     _dataChannel!.onMessage = (_) => _psService.attachDataChannel(_dataChannel!);
 
-    // ── Attach local microphone (non-fatal if denied) ─────────────────────────
+    // ── PERSISTENT MICROPHONE — always on, never killed ─────────────────────
     try {
       _localMicStream = await navigator.mediaDevices.getUserMedia({
         'audio': true,
         'video': false,
       });
       for (final track in _localMicStream!.getAudioTracks()) {
+        track.enabled = !_micMuted; // Respect current mute state
         await _pc!.addTrack(track, _localMicStream!);
       }
-      debugPrint('PixelStreamingController: mic track attached');
+      debugPrint('PixelStreamingController: mic track attached (muted=$_micMuted)');
     } catch (e) {
       debugPrint('PixelStreamingController: mic access denied (non-fatal): $e');
     }
@@ -412,14 +369,13 @@ class PixelStreamingController extends ChangeNotifier {
         renderer.srcObject =
             event.streams.isNotEmpty ? event.streams.first : null;
         _connectTimeoutTimer?.cancel();
-        _reconnectAttempts = 0; // Reset on successful stream
+        _reconnectAttempts = 0;
         _setState(PsConnectionState.streaming);
         notifyListeners();
 
-        // ── VOICE-FIRST: mic is enabled by default. Notify Unreal immediately
-        // so Convai starts in listening mode without any user action.
+        // VOICE-FIRST: mic is on by default. Notify Unreal immediately.
         Future.delayed(const Duration(milliseconds: 500), () {
-          if (!_disposed && _micEnabled) {
+          if (!_disposed && !_micMuted) {
             _psService.emitUIInteraction(jsonEncode({'type': 'start_listening'}));
             debugPrint('PixelStreamingController: voice-first — start_listening emitted');
           }
@@ -456,7 +412,6 @@ class PixelStreamingController extends ChangeNotifier {
 
   Future<void> _handleOffer(Map<String, dynamic> msg) async {
     if (_pc == null) {
-      // Offer arrived before config — create a basic peer connection first
       await _createPeerConnection({});
     }
 
@@ -485,7 +440,7 @@ class PixelStreamingController extends ChangeNotifier {
     } catch (_) {}
   }
 
-  // ── DataChannel → PixelStreamingService callbacks ────────────────────────
+  // ── DataChannel callbacks ────────────────────────────────────────────────
 
   void _onAiResponse(String text) {
     subtitleText = text;
@@ -504,7 +459,15 @@ class PixelStreamingController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Error / Reconnect ─────────────────────────────────────────────────────
+  /// Called when the DataChannel opens — notify Unreal about mic state.
+  void _onChannelOpen() {
+    if (!_disposed && !_micMuted) {
+      _psService.emitUIInteraction(jsonEncode({'type': 'start_listening'}));
+      debugPrint('PixelStreamingController: channel open — start_listening emitted');
+    }
+  }
+
+  // ── Error / Reconnect — INFINITE retries ──────────────────────────────────
 
   void _handleError(String msg) {
     if (_disposed) return;
@@ -517,9 +480,11 @@ class PixelStreamingController extends ChangeNotifier {
   }
 
   void _scheduleReconnect() {
-    if (_disposed || _reconnectAttempts >= _maxReconnectAttempts) return;
+    if (_disposed) return;
     _reconnectAttempts++;
-    final delay = Duration(seconds: 3 * _reconnectAttempts); // backoff
+    // Backoff: 3s, 6s, 9s, 12s, max 15s
+    final delaySec = (_reconnectAttempts * 3).clamp(3, 15);
+    final delay = Duration(seconds: delaySec);
     debugPrint(
       'PixelStreamingController: reconnect attempt $_reconnectAttempts '
       'in ${delay.inSeconds}s…',
@@ -539,8 +504,8 @@ class PixelStreamingController extends ChangeNotifier {
     _pc = null;
     _ws?.sink.close();
     _ws = null;
-    _localMicStream?.dispose();
-    _localMicStream = null;
+    // NOTE: We do NOT dispose _localMicStream on teardown.
+    // The mic stays persistent. Only disposed in dispose().
     _dataChannel = null;
     renderer.srcObject = null;
   }
@@ -549,7 +514,7 @@ class PixelStreamingController extends ChangeNotifier {
     connectionState = s;
   }
 
-  /// Direct UI-interaction shortcut for the screen layer.
+  /// Direct UI-interaction shortcut.
   bool emitUIInteraction(Map<String, dynamic> payload) =>
       _psService.emitUIInteraction(jsonEncode(payload));
 }

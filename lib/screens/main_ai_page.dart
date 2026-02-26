@@ -26,7 +26,6 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:speech_to_text/speech_to_text.dart';
 
 import '../core/assistant_state.dart';
 import '../services/pixel_streaming_controller.dart';
@@ -48,9 +47,6 @@ class MainAIPage extends StatefulWidget {
 class _MainAIPageState extends State<MainAIPage>
     with WidgetsBindingObserver {
   late final PixelStreamingController _ctrl;
-  final SpeechToText _stt = SpeechToText();
-  bool _sttAvailable = false;
-  Timer? _sttRestartTimer;
 
   final TextEditingController _textCtrl = TextEditingController();
   final FocusNode _textFocus = FocusNode();
@@ -77,52 +73,6 @@ class _MainAIPageState extends State<MainAIPage>
     await _ctrl.initialize();
     _ctrl.addListener(_onControllerUpdate);
     await _ctrl.connect();
-    await _initStt();
-  }
-
-  Future<void> _initStt() async {
-    _sttAvailable = await _stt.initialize(
-      onError: (_) => _schedulesSttRestart(),
-      onStatus: (status) {
-        if (status == 'done' || status == 'notListening') {
-          _schedulesSttRestart();
-        }
-      },
-    );
-    if (!_sttAvailable) return;
-    _beginSttSession();
-  }
-
-  void _schedulesSttRestart() {
-    _sttRestartTimer?.cancel();
-    _sttRestartTimer = Timer(const Duration(milliseconds: 800), () {
-      if (mounted && _sttAvailable) _beginSttSession();
-    });
-  }
-
-  void _beginSttSession() {
-    if (!_sttAvailable || !mounted || _stt.isListening) return;
-    _stt.listen(
-      onResult: (result) {
-        final words = result.recognizedWords.toLowerCase();
-        if ((words.contains('scan') || words.contains('boarding pass')) &&
-            !_isScanning) {
-          setState(() => _isScanning = true);
-          HapticFeedback.mediumImpact();
-        }
-        if (result.hasConfidenceRating && result.confidence > 0) {
-          if (mounted) {
-            setState(() => _volumeLevel = result.confidence.clamp(0.0, 1.0));
-          }
-        }
-      },
-      listenFor: const Duration(minutes: 10),
-      pauseFor: const Duration(seconds: 3),
-      listenOptions: SpeechListenOptions(
-        partialResults: true,
-        cancelOnError: false,
-      ),
-    );
   }
 
   void _onControllerUpdate() {
@@ -176,13 +126,10 @@ class _MainAIPageState extends State<MainAIPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
       _ctrl.localMicStream?.getAudioTracks().forEach((t) => t.enabled = false);
-      _stt.stop();
-      _sttRestartTimer?.cancel();
     } else if (state == AppLifecycleState.resumed) {
       if (_ctrl.isMicEnabled) {
         _ctrl.localMicStream?.getAudioTracks().forEach((t) => t.enabled = true);
       }
-      _beginSttSession();
     }
   }
 
@@ -194,8 +141,6 @@ class _MainAIPageState extends State<MainAIPage>
     _textCtrl.dispose();
     _textFocus.dispose();
     _bubbleTimer?.cancel();
-    _sttRestartTimer?.cancel();
-    _stt.stop();
     super.dispose();
   }
 
@@ -337,7 +282,14 @@ class _MainAIPageState extends State<MainAIPage>
                           }
                         },
                       ),
-                      const SizedBox(width: 74),
+                      const SizedBox(width: 24),
+                      _ScannerToggle(
+                        active: _isScanning,
+                        onTap: () {
+                          setState(() => _isScanning = !_isScanning);
+                          if (_isScanning) HapticFeedback.mediumImpact();
+                        },
+                      ),
                     ],
                   ),
                   const SizedBox(height: 40),
@@ -413,6 +365,36 @@ class _KeyboardToggle extends StatelessWidget {
         ),
         child: Icon(
           active ? Icons.keyboard_hide_rounded : Icons.keyboard_rounded,
+          color: active ? const Color(0xFF4FC3F7) : Colors.white54,
+          size: 22,
+        ),
+      ),
+    );
+  }
+}
+
+class _ScannerToggle extends StatelessWidget {
+  final bool active;
+  final VoidCallback onTap;
+  const _ScannerToggle({required this.active, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        width: 50, height: 50,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: active ? const Color(0xFF4FC3F7).withValues(alpha: 0.2) : Colors.white.withValues(alpha: 0.1),
+          border: Border.all(
+            color: active ? const Color(0xFF4FC3F7).withValues(alpha: 0.5) : Colors.white.withValues(alpha: 0.15),
+            width: 1.5,
+          ),
+        ),
+        child: Icon(
+          active ? Icons.qr_code_scanner : Icons.qr_code,
           color: active ? const Color(0xFF4FC3F7) : Colors.white54,
           size: 22,
         ),

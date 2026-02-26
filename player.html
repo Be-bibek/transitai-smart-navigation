@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0,
+             user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>AERO AI Assistant</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <style>
+    /* ═══════════════════════════════════════════════════════════════
+       RESET & BASE
+    ═══════════════════════════════════════════════════════════════ */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: 'Inter', 'Poppins', sans-serif;
+      -webkit-user-select: none;
+      user-select: none;
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       ROOT APP CONTAINER
+    ═══════════════════════════════════════════════════════════════ */
+    #appRoot {
+      position: fixed;
+      inset: 0;
+      width: 100dvw;
+      height: 100dvh;
+      background: #000;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       VIDEO LAYER — full-bleed WebRTC stream
+    ═══════════════════════════════════════════════════════════════ */
+    #videoLayer {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+    }
+
+    #streamVideo {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      background: #000;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       GRADIENT OVERLAY — depth & readability
+    ═══════════════════════════════════════════════════════════════ */
+    #gradientOverlay {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+      background:
+        linear-gradient(
+          to bottom,
+          rgba(0,0,0,0.52) 0%,
+          transparent 35%,
+          transparent 50%,
+          rgba(0,0,0,0.72) 100%
+        );
+      transition: opacity 0.6s ease;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       LOADING SCREEN
+    ═══════════════════════════════════════════════════════════════ */
+    #loadingScreen {
+      position: absolute;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(
+        ellipse 140% 140% at 50% 0%,
+        #0d1b2a 0%,
+        #050c15 60%,
+        #000 100%
+      );
+      gap: 28px;
+      transition: opacity 0.8s ease, visibility 0.8s ease;
+    }
+
+    #loadingScreen.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .loading-logo {
+      width: 80px;
+      height: 80px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, #4FC3F7 0%, #29B6F6 50%, #0288D1 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow:
+        0 0 40px rgba(79, 195, 247, 0.5),
+        0 0 80px rgba(79, 195, 247, 0.2);
+      animation: logoPulse 2.4s ease-in-out infinite;
+    }
+
+    .loading-logo svg {
+      width: 42px;
+      height: 42px;
+      fill: #fff;
+    }
+
+    @keyframes logoPulse {
+      0%, 100% { box-shadow: 0 0 40px rgba(79,195,247,0.5), 0 0 80px rgba(79,195,247,0.2); transform: scale(1); }
+      50%       { box-shadow: 0 0 60px rgba(79,195,247,0.8), 0 0 120px rgba(79,195,247,0.35); transform: scale(1.04); }
+    }
+
+    .loading-text {
+      font-family: 'Poppins', sans-serif;
+      font-size: 20px;
+      font-weight: 500;
+      color: rgba(255,255,255,0.90);
+      letter-spacing: 0.3px;
+      text-align: center;
+    }
+
+    .loading-text .dots::after {
+      content: '';
+      animation: dots 1.6s steps(4, end) infinite;
+    }
+
+    @keyframes dots {
+      0%   { content: '';    }
+      25%  { content: '.';   }
+      50%  { content: '..';  }
+      75%  { content: '...'; }
+      100% { content: '';    }
+    }
+
+    .loading-bar-wrap {
+      width: 200px;
+      height: 3px;
+      border-radius: 99px;
+      background: rgba(255,255,255,0.10);
+      overflow: hidden;
+    }
+
+    .loading-bar-inner {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, #4FC3F7, #29B6F6, #0288D1);
+      animation: barScan 1.6s ease-in-out infinite;
+      width: 40%;
+    }
+
+    @keyframes barScan {
+      0%   { margin-left: -40%; }
+      100% { margin-left: 100%; }
+    }
+
+    .loading-sub {
+      font-size: 13px;
+      color: rgba(255,255,255,0.38);
+      letter-spacing: 0.5px;
+      font-weight: 400;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       UI LAYER — sits above everything except loading screen
+    ═══════════════════════════════════════════════════════════════ */
+    #uiLayer {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      /* safe area for notch/camera cutout */
+      padding: env(safe-area-inset-top, 16px)
+               env(safe-area-inset-right, 0)
+               env(safe-area-inset-bottom, 16px)
+               env(safe-area-inset-left, 0);
+      opacity: 0;
+      transition: opacity 0.7s ease;
+      pointer-events: none;
+    }
+
+    #uiLayer.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       STATUS HEADER — top glass pill
+    ═══════════════════════════════════════════════════════════════ */
+    #statusHeader {
+      margin-top: 18px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px 10px 14px;
+      background: rgba(255,255,255,0.10);
+      backdrop-filter: blur(20px) saturate(1.6);
+      -webkit-backdrop-filter: blur(20px) saturate(1.6);
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 99px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #4FC3F7;
+      box-shadow: 0 0 8px rgba(79,195,247,0.9);
+      animation: dotPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes dotPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.55; transform: scale(0.85); }
+    }
+
+    #statusText {
+      font-family: 'Inter', sans-serif;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: rgba(255,255,255,0.88);
+      letter-spacing: 0.2px;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       MIDDLE SPACER
+    ═══════════════════════════════════════════════════════════════ */
+    #middleSpacer {
+      flex: 1;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       SUBTITLE BOX — glass card that appears above mic
+    ═══════════════════════════════════════════════════════════════ */
+    #subtitleBox {
+      width: calc(100% - 48px);
+      max-width: 420px;
+      padding: 16px 22px;
+      background: rgba(255,255,255,0.12);
+      backdrop-filter: blur(12px) saturate(1.4);
+      -webkit-backdrop-filter: blur(12px) saturate(1.4);
+      border: 1px solid rgba(255,255,255,0.20);
+      border-radius: 20px;
+      box-shadow:
+        0 8px 32px rgba(0,0,0,0.35),
+        0 0 0 0.5px rgba(255,255,255,0.06) inset;
+      text-align: center;
+      transform: translateY(12px);
+      opacity: 0;
+      transition:
+        opacity 0.38s cubic-bezier(.4,0,.2,1),
+        transform 0.38s cubic-bezier(.4,0,.2,1);
+      pointer-events: none;
+      margin-bottom: 20px;
+    }
+
+    #subtitleBox.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    #subtitleBox.hiding {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+
+    #subtitleText {
+      font-family: 'Poppins', sans-serif;
+      font-size: 16px;
+      font-weight: 400;
+      line-height: 1.55;
+      color: rgba(255,255,255,0.95);
+      word-break: break-word;
+    }
+
+    /* Typing cursor while streaming text */
+    .typing-cursor::after {
+      content: '▌';
+      animation: blink 0.8s step-end infinite;
+      color: #4FC3F7;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       MIC BUTTON
+    ═══════════════════════════════════════════════════════════════ */
+    #micWrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 32px;
+      gap: 12px;
+    }
+
+    #micLabel {
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.48);
+      transition: color 0.3s ease;
+    }
+
+    #micBtn {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      border: none;
+      cursor: pointer;
+      outline: none;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #4FC3F7 0%, #29B6F6 100%);
+      box-shadow:
+        0 0 24px rgba(79,195,247,0.55),
+        0 8px 24px rgba(0,0,0,0.40);
+      transition:
+        transform 0.18s cubic-bezier(.4,0,.2,1),
+        box-shadow 0.3s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Idle glow rings */
+    #micBtn::before,
+    #micBtn::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 2px solid rgba(79,195,247,0.30);
+      animation: idleRing 3s ease-in-out infinite;
+    }
+
+    #micBtn::after {
+      animation-delay: 1.5s;
+    }
+
+    @keyframes idleRing {
+      0%   { transform: scale(1);    opacity: 0.6; }
+      70%  { transform: scale(1.55); opacity: 0;   }
+      100% { transform: scale(1.55); opacity: 0;   }
+    }
+
+    /* Listening state */
+    #micBtn.listening {
+      background: linear-gradient(135deg, #F8BBD0 0%, #EF9A9A 100%);
+      box-shadow:
+        0 0 48px rgba(239,154,154,0.70),
+        0 8px 24px rgba(0,0,0,0.40);
+      animation: listenPulse 1.1s ease-in-out infinite;
+    }
+
+    #micBtn.listening::before,
+    #micBtn.listening::after {
+      border-color: rgba(239,154,154,0.40);
+      animation: listenRing 1.1s ease-in-out infinite;
+    }
+
+    #micBtn.listening::after { animation-delay: 0.55s; }
+
+    @keyframes listenPulse {
+      0%, 100% { transform: scale(1);    }
+      50%       { transform: scale(1.06); }
+    }
+
+    @keyframes listenRing {
+      0%   { transform: scale(1);    opacity: 0.8; }
+      80%  { transform: scale(1.75); opacity: 0;   }
+      100% { transform: scale(1.75); opacity: 0;   }
+    }
+
+    /* Processing state */
+    #micBtn.processing {
+      background: linear-gradient(135deg, #FFE082 0%, #FFB300 100%);
+      box-shadow:
+        0 0 40px rgba(255,179,0,0.60),
+        0 8px 24px rgba(0,0,0,0.40);
+      animation: processingRotate 1.8s linear infinite;
+    }
+
+    @keyframes processingRotate {
+      from { filter: hue-rotate(0deg);   }
+      to   { filter: hue-rotate(40deg); } 
+    }
+
+    /* Icon inside mic button */
+    #micIcon {
+      z-index: 2;
+      pointer-events: none;
+      transition: transform 0.2s ease;
+    }
+
+    #micBtn:active #micIcon {
+      transform: scale(0.88);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       WAVEFORM — animated bars while listening
+    ═══════════════════════════════════════════════════════════════ */
+    #waveform {
+      display: flex;
+      align-items: center;
+      gap: 3.5px;
+      height: 32px;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    #waveform.active { opacity: 1; }
+
+    .wave-bar {
+      width: 3.5px;
+      border-radius: 99px;
+      background: linear-gradient(to top, #29B6F6, #4FC3F7);
+      transform-origin: bottom center;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       ERROR BANNER
+    ═══════════════════════════════════════════════════════════════ */
+    #errorBanner {
+      position: absolute;
+      bottom: 120px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 50;
+      background: rgba(239,83,80,0.15);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(239,83,80,0.35);
+      border-radius: 14px;
+      padding: 12px 22px;
+      color: #FFCDD2;
+      font-size: 14px;
+      font-weight: 500;
+      text-align: center;
+      white-space: nowrap;
+      display: none;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+
+    #errorBanner.visible {
+      display: block;
+      opacity: 1;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════
+       RECONNECT BUTTON (shown when stream drops)
+    ═══════════════════════════════════════════════════════════════ */
+    #reconnectBtn {
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 50;
+      padding: 14px 36px;
+      border-radius: 99px;
+      background: linear-gradient(135deg, #4FC3F7 0%, #0288D1 100%);
+      border: none;
+      color: #fff;
+      font-family: 'Inter', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.3px;
+      cursor: pointer;
+      box-shadow: 0 4px 24px rgba(79,195,247,0.4);
+      display: none;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    #reconnectBtn.visible { display: block; }
+
+    #reconnectBtn:active {
+      transform: translateX(-50%) scale(0.96);
+      box-shadow: 0 2px 12px rgba(79,195,247,0.3);
+    }
+  </style>
+</head>
+
+<body>
+<div id="appRoot">
+
+  <!-- ──────────────────────────────────────────
+       1. VIDEO LAYER
+  ────────────────────────────────────────── -->
+  <div id="videoLayer">
+    <video
+      id="streamVideo"
+      autoplay
+      playsinline
+      muted
+      webkit-playsinline
+    ></video>
+  </div>
+
+  <!-- ──────────────────────────────────────────
+       2. GRADIENT OVERLAY
+  ────────────────────────────────────────── -->
+  <div id="gradientOverlay"></div>
+
+  <!-- ──────────────────────────────────────────
+       3. LOADING SCREEN
+  ────────────────────────────────────────── -->
+  <div id="loadingScreen">
+    <div class="loading-logo">
+      <!-- Mic / AI icon -->
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm0 2a2 2 0 0 0-2 2v7a2 2 0 0 0 4 0V5a2 2 0 0 0-2-2zM6.5 10.5A5.5 5.5 0 0 0 12 16a5.5 5.5 0 0 0 5.5-5.5H20A8 8 0 0 1 13 22.9V24h-2v-1.1A8 8 0 0 1 4 10.5h2.5z"/>
+      </svg>
+    </div>
+    <p class="loading-text">Connecting to AI Assistant<span class="dots"></span></p>
+    <div class="loading-bar-wrap">
+      <div class="loading-bar-inner"></div>
+    </div>
+    <p class="loading-sub">AERO Sathi &nbsp;·&nbsp; Powered by Unreal Engine</p>
+  </div>
+
+  <!-- ──────────────────────────────────────────
+       4. UI LAYER (hidden until stream is live)
+  ────────────────────────────────────────── -->
+  <div id="uiLayer">
+
+    <!-- 4a. Status Header -->
+    <div id="statusHeader">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Connected</span>
+    </div>
+
+    <!-- 4b. Spacer -->
+    <div id="middleSpacer"></div>
+
+    <!-- 4c. Waveform (visible while listening) -->
+    <div id="waveform">
+      <div class="wave-bar" style="height:8px"  id="wb1"></div>
+      <div class="wave-bar" style="height:18px" id="wb2"></div>
+      <div class="wave-bar" style="height:13px" id="wb3"></div>
+      <div class="wave-bar" style="height:24px" id="wb4"></div>
+      <div class="wave-bar" style="height:16px" id="wb5"></div>
+      <div class="wave-bar" style="height:20px" id="wb6"></div>
+      <div class="wave-bar" style="height:11px" id="wb7"></div>
+    </div>
+
+    <!-- 4d. Subtitle Box -->
+    <div id="subtitleBox">
+      <p id="subtitleText"></p>
+    </div>
+
+    <!-- 4e. Mic Button + Label -->
+    <div id="micWrap">
+      <button id="micBtn" aria-label="Microphone">
+        <!-- Mic SVG (idle / active) -->
+        <svg id="micIcon" width="34" height="34" viewBox="0 0 24 24" fill="#fff">
+          <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm0 2a2 2 0 0 0-2 2v7a2 2 0 0 0 4 0V5a2 2 0 0 0-2-2zM6.5 10.5A5.5 5.5 0 0 0 12 16a5.5 5.5 0 0 0 5.5-5.5H20A8 8 0 0 1 13 22.9V24h-2v-1.1A8 8 0 0 1 4 10.5h2.5z"/>
+        </svg>
+      </button>
+      <span id="micLabel">TAP TO SPEAK</span>
+    </div>
+
+  </div><!-- /#uiLayer -->
+
+  <!-- ──────────────────────────────────────────
+       5. ERROR BANNER
+  ────────────────────────────────────────── -->
+  <div id="errorBanner">⚠️ &nbsp;Stream disconnected</div>
+
+  <!-- ──────────────────────────────────────────
+       6. RECONNECT BUTTON
+  ────────────────────────────────────────── -->
+  <button id="reconnectBtn">Reconnect</button>
+
+</div><!-- /#appRoot -->
+
+<!-- ════════════════════════════════════════════════════════════════
+     JAVASCRIPT
+════════════════════════════════════════════════════════════════ -->
+<script>
+'use strict';
+
+/* ─────────────────────────────────────────────────────────────────
+   CONFIG
+───────────────────────────────────────────────────────────────── */
+const CONFIG = {
+  SIGNAL_URL : 'ws://192.168.29.106:8888',
+  RECONNECT_DELAY_MS : 3000,
+  MAX_RECONNECT_TRIES : 5,
+  SUBTITLE_AUTO_HIDE_MS : 4500,
+};
+
+/* ─────────────────────────────────────────────────────────────────
+   DOM REFS
+───────────────────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+const dom = {
+  loadingScreen : $('loadingScreen'),
+  uiLayer       : $('uiLayer'),
+  video         : $('streamVideo'),
+  statusDot     : $('statusDot'),
+  statusText    : $('statusText'),
+  subtitleBox   : $('subtitleBox'),
+  subtitleText  : $('subtitleText'),
+  micBtn        : $('micBtn'),
+  micLabel      : $('micLabel'),
+  waveform      : $('waveform'),
+  waveBars      : document.querySelectorAll('.wave-bar'),
+  errorBanner   : $('errorBanner'),
+  reconnectBtn  : $('reconnectBtn'),
+};
+
+/* ─────────────────────────────────────────────────────────────────
+   STATE
+───────────────────────────────────────────────────────────────── */
+let state = {
+  connected      : false,
+  micMode        : 'idle',    // 'idle' | 'listening' | 'processing'
+  subtitleTimer  : null,
+  reconnectCount : 0,
+  reconnectTimer : null,
+};
+
+// Public handle for Unreal → JS communication
+let webRtcPlayerObj = null;   // will hold RTCPeerConnection wrapper
+let _dataChannel    = null;
+
+/* ─────────────────────────────────────────────────────────────────
+   PIXEL STREAMING — WebSocket signalling + WebRTC
+───────────────────────────────────────────────────────────────── */
+let ws;
+let pc;   // RTCPeerConnection
+
+function connectToSignalling() {
+  log('Connecting to signalling server:', CONFIG.SIGNAL_URL);
+
+  ws = new WebSocket(CONFIG.SIGNAL_URL);
+
+  ws.onopen = () => {
+    log('WS open — signalling connected');
+    state.reconnectCount = 0;
+    // UE5 signalling may require a "subscribe" message (Cirrus / newer SFU)
+    const sub = JSON.stringify({ type: 'subscribe' });
+    ws.send(sub);
+  };
+
+  ws.onmessage = async (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); }
+    catch { log('Non-JSON WS message', ev.data); return; }
+
+    switch (msg.type) {
+      case 'config':
+        await createPeerConnection(msg.peerConnectionOptions);
+        break;
+      case 'offer':
+        await handleOffer(msg.sdp);
+        break;
+      case 'answer':
+        await handleAnswer(msg.sdp);
+        break;
+      case 'iceCandidate':
+        await handleIceCandidate(msg.candidate || msg);
+        break;
+      case 'ping':
+        ws.send(JSON.stringify({ type: 'pong' }));
+        break;
+      default:
+        log('Unhandled WS msg type:', msg.type);
+    }
+  };
+
+  ws.onerror = (e) => {
+    log('WS error', e);
+  };
+
+  ws.onclose = (ev) => {
+    log('WS closed', ev.code, ev.reason);
+    handleDisconnect();
+  };
+}
+
+async function createPeerConnection(pcopts) {
+  const iceServers = (pcopts && pcopts.iceServers)
+    ? pcopts.iceServers
+    : [{ urls: 'stun:stun.l.google.com:19302' }];
+
+  const configuration = {
+    sdpSemantics : 'unified-plan',
+    iceServers,
+  };
+
+  pc = new RTCPeerConnection(configuration);
+
+  // Expose globally for Unreal/library compatibility
+  webRtcPlayerObj = pc;
+
+  pc.onicecandidate = (ev) => {
+    if (ev.candidate && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type      : 'iceCandidate',
+        candidate : ev.candidate,
+      }));
+    }
+  };
+
+  pc.ontrack = (ev) => {
+    if (ev.track.kind === 'video') {
+      log('Video track received — attaching to <video>');
+      if (dom.video.srcObject !== ev.streams[0]) {
+        dom.video.srcObject = ev.streams[0];
+      }
+      dom.video.play().catch(e => log('Autoplay blocked:', e));
+      onStreamConnected();
+    }
+  };
+
+  pc.ondatachannel = (ev) => {
+    _dataChannel = ev.channel;
+    _dataChannel.onmessage = onDataChannelMessage;
+    log('DataChannel ready:', _dataChannel.label);
+  };
+
+  pc.onconnectionstatechange = () => {
+    log('PC state:', pc.connectionState);
+    if (pc.connectionState === 'disconnected' ||
+        pc.connectionState === 'failed') {
+      handleDisconnect();
+    }
+  };
+}
+
+async function handleOffer(sdp) {
+  if (!pc) await createPeerConnection(null);
+  await pc.setRemoteDescription({ type: 'offer', sdp });
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+  }
+}
+
+async function handleAnswer(sdp) {
+  await pc.setRemoteDescription({ type: 'answer', sdp });
+}
+
+async function handleIceCandidate(candidate) {
+  try {
+    await pc.addIceCandidate(candidate);
+  } catch (e) {
+    log('addIceCandidate error:', e);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   DATA CHANNEL — receive messages from Unreal Engine
+───────────────────────────────────────────────────────────────── */
+function onDataChannelMessage(ev) {
+  let msg;
+  try { msg = JSON.parse(ev.data); }
+  catch { return; }
+
+  switch (msg.type) {
+    case 'ai_response':
+      updateSubtitle(msg.text || '');
+      break;
+    case 'state':
+      handleStateChange(msg.value || 'idle');
+      break;
+    default:
+      log('DataChannel msg:', msg);
+  }
+}
+
+function handleStateChange(value) {
+  switch (value) {
+    case 'listening':
+      setMicMode('listening');
+      break;
+    case 'processing':
+      setMicMode('processing');
+      break;
+    case 'speaking':
+      setMicMode('idle');
+      break;
+    case 'idle':
+    default:
+      setMicMode('idle');
+      break;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   PUBLIC API — Unreal → Frontend communication
+   Matches the Pixel Streaming JS API surface
+───────────────────────────────────────────────────────────────── */
+
+/**
+ * updateSubtitle(text)
+ * Displays text in the subtitle box with fade-in, then auto-hides.
+ * Can be called from Unreal via DataChannel or directly from JS.
+ */
+function updateSubtitle(text) {
+  if (!text || text.trim() === '') {
+    hideSubtitle();
+    return;
+  }
+
+  clearTimeout(state.subtitleTimer);
+
+  dom.subtitleText.textContent = text;
+  dom.subtitleBox.classList.remove('hiding');
+  dom.subtitleBox.classList.add('visible');
+
+  state.subtitleTimer = setTimeout(() => {
+    hideSubtitle();
+  }, CONFIG.SUBTITLE_AUTO_HIDE_MS);
+}
+
+function hideSubtitle() {
+  dom.subtitleBox.classList.add('hiding');
+  setTimeout(() => {
+    dom.subtitleBox.classList.remove('visible', 'hiding');
+    dom.subtitleText.textContent = '';
+  }, 380);
+}
+
+/**
+ * emitUIInteraction(jsonString)
+ * Send data to Unreal Engine via the DataChannel.
+ * Matches the standard Pixel Streaming API.
+ */
+function emitUIInteraction(jsonString) {
+  if (!_dataChannel || _dataChannel.readyState !== 'open') {
+    log('DataChannel not open — cannot emit:', jsonString);
+    return;
+  }
+  _dataChannel.send(typeof jsonString === 'string'
+    ? jsonString
+    : JSON.stringify(jsonString));
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   CONNECTION LIFECYCLE
+───────────────────────────────────────────────────────────────── */
+function onStreamConnected() {
+  state.connected = true;
+  setStatus('AI Assistant Ready', true);
+
+  // Fade out loading, fade in UI
+  dom.loadingScreen.classList.add('hidden');
+  dom.uiLayer.classList.add('visible');
+  dom.errorBanner.classList.remove('visible');
+  dom.reconnectBtn.classList.remove('visible');
+  setTimeout(() => { dom.errorBanner.style.display = 'none'; }, 450);
+}
+
+function handleDisconnect() {
+  if (!state.connected) return; // already handling
+  state.connected = false;
+
+  setStatus('Disconnected', false);
+  dom.uiLayer.classList.remove('visible');
+  dom.errorBanner.classList.add('visible');
+  dom.reconnectBtn.classList.add('visible');
+
+  scheduleReconnect();
+}
+
+function scheduleReconnect() {
+  clearTimeout(state.reconnectTimer);
+  if (state.reconnectCount >= CONFIG.MAX_RECONNECT_TRIES) {
+    setStatus('Connection failed — tap Reconnect', false);
+    return;
+  }
+  state.reconnectCount++;
+  log(`Reconnecting in ${CONFIG.RECONNECT_DELAY_MS}ms (attempt ${state.reconnectCount})`);
+  state.reconnectTimer = setTimeout(() => {
+    connectToSignalling();
+  }, CONFIG.RECONNECT_DELAY_MS);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   MIC BUTTON LOGIC
+───────────────────────────────────────────────────────────────── */
+dom.micBtn.addEventListener('click', onMicClick);
+
+function onMicClick() {
+  if (!state.connected) return;
+
+  if (state.micMode === 'idle') {
+    setMicMode('listening');
+    emitUIInteraction(JSON.stringify({ type: 'flutter_event', event: 'start_listening' }));
+    updateSubtitle('Listening…');
+  } else if (state.micMode === 'listening') {
+    setMicMode('processing');
+    emitUIInteraction(JSON.stringify({ type: 'flutter_event', event: 'stop_listening' }));
+    updateSubtitle('Processing…');
+  } else if (state.micMode === 'processing') {
+    // Cancel
+    setMicMode('idle');
+    emitUIInteraction(JSON.stringify({ type: 'flutter_event', event: 'cancel' }));
+    hideSubtitle();
+  }
+}
+
+function setMicMode(mode) {
+  state.micMode = mode;
+  dom.micBtn.className = ''; // clear all state classes
+
+  switch (mode) {
+    case 'listening':
+      dom.micBtn.classList.add('listening');
+      dom.micLabel.textContent = 'TAP TO STOP';
+      dom.micLabel.style.color = 'rgba(239,154,154,0.85)';
+      dom.waveform.classList.add('active');
+      animateWaveBars(true);
+      break;
+    case 'processing':
+      dom.micBtn.classList.add('processing');
+      dom.micLabel.textContent = 'PROCESSING';
+      dom.micLabel.style.color = 'rgba(255,224,130,0.85)';
+      dom.waveform.classList.remove('active');
+      animateWaveBars(false);
+      break;
+    case 'idle':
+    default:
+      dom.micLabel.textContent = 'TAP TO SPEAK';
+      dom.micLabel.style.color = 'rgba(255,255,255,0.48)';
+      dom.waveform.classList.remove('active');
+      animateWaveBars(false);
+      break;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   WAVEFORM ANIMATION
+───────────────────────────────────────────────────────────────── */
+let waveAnimFrame;
+
+function animateWaveBars(active) {
+  cancelAnimationFrame(waveAnimFrame);
+  if (!active) {
+    dom.waveBars.forEach(b => {
+      b.style.transition = 'height 0.3s ease';
+      b.style.height = '4px';
+    });
+    return;
+  }
+  const heights = [8, 18, 13, 24, 16, 20, 11];
+
+  function tick() {
+    dom.waveBars.forEach((b, i) => {
+      const h = heights[i] + (Math.sin(Date.now() / 180 + i * 0.9) * 8);
+      b.style.height = Math.max(4, h) + 'px';
+    });
+    waveAnimFrame = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   STATUS HELPERS
+───────────────────────────────────────────────────────────────── */
+function setStatus(text, online) {
+  dom.statusText.textContent = text;
+  dom.statusDot.style.background = online ? '#4FC3F7' : '#EF5350';
+  dom.statusDot.style.boxShadow   = online
+    ? '0 0 8px rgba(79,195,247,0.9)'
+    : '0 0 8px rgba(239,83,80,0.9)';
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   RECONNECT BUTTON
+───────────────────────────────────────────────────────────────── */
+dom.reconnectBtn.addEventListener('click', () => {
+  state.reconnectCount = 0;
+  dom.reconnectBtn.classList.remove('visible');
+  // Show loading screen again
+  dom.loadingScreen.classList.remove('hidden');
+  dom.uiLayer.classList.remove('visible');
+  connectToSignalling();
+});
+
+/* ─────────────────────────────────────────────────────────────────
+   PREVENT SCROLL / ZOOM / CONTEXT MENU
+───────────────────────────────────────────────────────────────── */
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+document.addEventListener('touchstart', e => {
+  if (e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+
+/* ─────────────────────────────────────────────────────────────────
+   LOGGER
+───────────────────────────────────────────────────────────────── */
+function log(...args) {
+  console.log('[AERO-PS]', ...args);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   ENTRY POINT — auto-connect on load
+───────────────────────────────────────────────────────────────── */
+window.addEventListener('load', () => {
+  connectToSignalling();
+});
+
+/* ─────────────────────────────────────────────────────────────────
+   EXPOSE PUBLIC API (so Unreal Blueprint → JS calls work)
+───────────────────────────────────────────────────────────────── */
+window.updateSubtitle   = updateSubtitle;
+window.emitUIInteraction = emitUIInteraction;
+window.webRtcPlayerObj  = webRtcPlayerObj;
+</script>
+</body>
+</html>

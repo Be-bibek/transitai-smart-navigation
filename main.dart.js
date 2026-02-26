@@ -74865,7 +74865,7 @@ r.w.nr(B.aT.lq(A.ab(["type",s?"start_listening":"stop_listening"],t.N,t.z),null)
 r=this.c.ads(s)
 if(!b.d)b.a.$1(r)},
 a71(a,b){this.ax.w.nr(B.aT.lq(A.ab(["type","remote_input","x",a.a,"y",a.b],t.N,t.z),null))},
-a6W(a,b){this.ax.w.nr(B.aT.lq(A.ab(["type","text_input","text","User has scanned a boarding pass. Gate: A12, Flight: EK202. Please confirm these details with the user warmly."],t.N,t.z),null))},
+a6W(a,b){this.ax.w.nr(B.aT.lq(A.ab(["type","text_input","text","The user has just scanned their boarding pass. Name: Mr. Debarghya, Flight: 6E 7014 from Agartala to Kolkata, Gate: 01, Seat: 18C, PNR: WCWMWX. Welcome them warmly by name and confirm their flight details."],t.N,t.z),null))},
 a6b(a,b){var s=this,r=s.c.ae5(a.a,!0)
 if(!b.d)b.a.$1(r)
 r=s.rG$
@@ -75154,7 +75154,7 @@ $1(a){var s=this.a
 s.ae(new A.aid(s))
 A.I_()
 this.b.B(0,new A.oW(a))
-s.Nh("Boarding pass scanned \u2708\nGate A12 \xb7 Flight EK202")},
+s.Nh("Boarding pass scanned \u2708\nMr. Debarghya \xb7 Gate 01 \xb7 6E 7014")},
 $S:38}
 A.aid.prototype={
 $0(){return this.a.r=!1},

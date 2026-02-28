@@ -1,6 +1,5 @@
 <div align="center">
 
-<img src="assets/screenshots/banner.png" alt="TransitAI Banner" width="100%"/>
 
 <div align="center" style="border: 1px solid #ddd; border-radius: 16px; padding: 20px; max-width: 800px; margin: auto;">
 

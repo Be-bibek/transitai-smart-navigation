@@ -18,21 +18,6 @@
 </p>
 
 
-<div align="center" style="border: 1px solid #ddd; border-radius: 16px; padding: 20px; max-width: 800px; margin: auto;">
-
-<h3>🎬 Live Demo: AI Transit Guide</h3>
-
-<a href="https://youtu.be/E10vPPAypBg?si=6eYtMk43wsUKIkC-" target="_blank">
-  <img src="https://img.youtube.com/vi/E10vPPAypBg/maxresdefault.jpg" 
-       width="100%" 
-       style="border-radius: 12px;" />
-</a>
-
-<p style="margin-top: 10px;">
-  A real-time AI-powered assistant demonstrating multilingual voice interaction, AR navigation, and smart guidance in transport environments.
-</p>
-
-</div>
 
 <br/>
 <br/>

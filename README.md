@@ -1,4 +1,37 @@
 <div align="center">
+<h2 align="center">🌐 Live Project Demo</h2>
+
+<p align="center">
+  <a href="https://be-bibek.github.io/transitai-smart-navigation/" target="_blank">
+    <img src="https://img.shields.io/badge/Launch-Demo-blue?style=for-the-badge&logo=google-chrome" />
+  </a>
+</p>
+
+<p align="center">
+  <b>AI Transit Guide is deployed and accessible via web interface.</b><br>
+  Experience real-time multilingual interaction, AR-based navigation, and intelligent transport assistance.
+</p>
+
+<div align="center" style="border: 1px solid #ddd; border-radius: 16px; padding: 20px; max-width: 800px; margin: auto;">
+
+<h3>⚠️ Important Note</h3>
+
+<p>
+To access the full functionality of the system (especially real-time communication with the AI engine), 
+your device must be connected to the <b>same Wi-Fi network</b> as the local server running the backend services.
+</p>
+
+<p>
+This ensures low-latency communication and enables features such as:
+</p>
+
+<ul align="left">
+  <li>🎤 Real-time voice interaction</li>
+  <li>📡 Local AI processing (Edge AI)</li>
+  <li>📱 AR navigation with live guidance</li>
+</ul>
+
+</div>
 
 
 <h2 align="center">🎥 Project Demo</h2>
